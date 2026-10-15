@@ -65,7 +65,12 @@ change an application's UI.
 Receipts are backend messages, not portable job IDs. `Job::duplex = None` preserves the queue's
 duplex default; `Some(Duplex::Off)` forces simplex. `Job::scaling` defaults to `Scaling::Exact`;
 callers exporting arbitrary document sizes can choose `Scaling::ShrinkToFit`. Exact mode reports
-a driver paper-size mismatch. On Windows `command_preview` describes the in-process job
+a driver paper-size mismatch. `printer_papers` lists the sizes a driver offers (Windows:
+its PrintCapabilities page media sizes, keyed by Print Schema or vendor name, in points, as
+the driver has them: a label's width is across the feed), so an app's Print dialog can offer
+them and lay the sheets out on one the driver has; on CUPS it is empty, the queue's PPD
+(`*PaperDimension`) holding them instead.
+On Windows `command_preview` describes the in-process job
 (`xps-print`, then the printer and options as `key=value`) instead of a command line. The crate
 does not provide PostScript output, separations, trapping or colour-managed device rendering.
 

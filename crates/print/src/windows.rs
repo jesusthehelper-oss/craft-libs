@@ -18,7 +18,7 @@ use winprint::ticket::{FeatureOptionPack as _, PageMediaSize, PrintCapabilities,
 
 use crate::sheets::{self, Fit, SAME};
 use crate::ticket::{self, Paper};
-use crate::{Error, Job, Printer, Scaling};
+use crate::{Error, Job, Printer, PrinterPaper, Scaling};
 
 fn spool_error(e: impl std::fmt::Display) -> Error {
     Error::Spool(e.to_string())
@@ -43,6 +43,31 @@ fn two_sided(device: &PrinterDevice) -> Option<bool> {
     let capabilities = PrintCapabilities::fetch(device).ok()?;
     let duplex = OwnedName::qualified("JobDuplexAllDocumentsContiguously", NS_PSK, Some("psk"));
     Some(capabilities.options_for_feature(duplex).any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided"))))
+}
+
+/// [`crate::printer_papers`]: the driver's page media sizes as it has them, keyed by their
+/// Print Schema or vendor name and named by their display name. Roll media (a side of 0) and
+/// sizes beyond PDF's 200-inch page limit are left out, as are repeated keywords.
+pub(crate) fn printer_papers(printer: &str) -> Vec<PrinterPaper> {
+    const MAX_SIDE: f64 = 14_400.0;
+    let Ok(devices) = PrinterDevice::all() else { return Vec::new() };
+    let Some(device) = devices.iter().find(|d| d.name() == printer) else { return Vec::new() };
+    let Ok(capabilities) = PrintCapabilities::fetch(device) else { return Vec::new() };
+    let mut out: Vec<PrinterPaper> = Vec::new();
+    for media in capabilities.page_media_sizes() {
+        if out.len() >= crate::MAX_PRINTER_PAPERS {
+            break;
+        }
+        let Some(key) = media.option().name.as_ref().map(|n| n.local_name.clone()).filter(|k| !k.is_empty()) else { continue };
+        let size = media.size();
+        let (w, h) = (ticket::points(size.width_in_micron()), ticket::points(size.height_in_micron()));
+        if size.is_roll() || !(1.0..=MAX_SIDE).contains(&w) || !(1.0..=MAX_SIDE).contains(&h) || out.iter().any(|p| p.key == key) {
+            continue;
+        }
+        let label = media.display_name().filter(|l| !l.trim().is_empty()).map_or_else(|| key.clone(), |l| l.trim().to_string());
+        out.push(PrinterPaper { key, label, size: (w, h) });
+    }
+    out
 }
 
 /// The queue the job goes to: the one asked for, else the default. Never another one: a job
