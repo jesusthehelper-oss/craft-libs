@@ -144,7 +144,9 @@ fn integer(node: roxmltree::Node<'_, '_>, tag: &str, name: &str) -> Option<u32> 
 /// paper (when `paper` is given, that one, to a quarter of a millimetre). Returns the paper's
 /// width and height in micrometres as the driver lists it. Only those schema fields are read:
 /// some drivers return empty vendor parameters that a stricter parser would refuse.
-pub(crate) fn verify_ticket(xml: &str, paper: Option<(u32, u32)>, landscape: bool) -> Result<(u32, u32), Error> {
+/// `scaling_offered`: whether the driver's capabilities have a PageScaling feature; only then is its
+/// answer about scaling checked.
+pub(crate) fn verify_ticket(xml: &str, paper: Option<(u32, u32)>, landscape: bool, scaling_offered: bool) -> Result<(u32, u32), Error> {
     let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
     let feature = |name: &str| document.root_element().children().find(|n| n.has_tag_name((NS_PSF, "Feature")) && named(*n, name));
     let media = feature("PageMediaSize").ok_or_else(|| spool_error("the printer's driver did not confirm the paper size; nothing was sent"))?;
@@ -162,7 +164,9 @@ pub(crate) fn verify_ticket(xml: &str, paper: Option<(u32, u32)>, landscape: boo
     if !orientation.is_some_and(|n| named(n, if landscape { "Landscape" } else { "Portrait" })) {
         return Err(spool_error("the printer's driver changed the orientation; nothing was sent"));
     }
-    if let Some(scaling) = feature("PageScaling") {
+    // Only a driver that offers PageScaling can scale by it; one that doesn't (Zebra's ZDesigner)
+    // was not asked, and whatever the merge put there is not a choice of its own.
+    if let Some(scaling) = feature("PageScaling").filter(|_| scaling_offered) {
         // Microsoft's IPP class driver names its "None" in a namespace of its own.
         if !scaling.children().any(|n| n.has_tag_name((NS_PSF, "Option")) && n.attribute("name").and_then(|v| v.rsplit(':').next()) == Some("None")) {
             return Err(spool_error("the printer's driver would scale the sheets; nothing was sent"));
@@ -285,16 +289,23 @@ mod tests {
     fn a_driver_that_changes_the_sheet_is_refused() {
         let letter = (215_900, 279_400);
         let ticket = validated(letter, "Portrait", Some("psk:None"));
-        assert_eq!(verify_ticket(&ticket, Some(letter), false), Ok(letter));
-        assert_eq!(verify_ticket(&ticket, Some((279_400, 215_900)), false), Ok(letter), "either way round");
-        assert_eq!(verify_ticket(&ticket, None, false), Ok(letter), "shrink-to-fit takes the driver's paper");
-        assert!(verify_ticket(&ticket, Some((210_000, 297_000)), false).is_err(), "A4 asked, Letter returned");
-        assert!(verify_ticket(&ticket, Some(letter), true).is_err(), "landscape asked, portrait returned");
-        assert!(verify_ticket(&validated(letter, "Portrait", Some("psk:FitApplicationBleedSizeToPageImageableSize")), Some(letter), false).is_err());
-        assert!(verify_ticket(&validated(letter, "Portrait", Some("ns0000:None")), Some(letter), false).is_ok(), "the IPP class driver's None");
-        assert!(verify_ticket(&validated(letter, "Portrait", None), Some(letter), false).is_ok(), "a driver without scaling");
-        assert!(verify_ticket(&validated((0, 279_400), "Portrait", None), None, false).is_err(), "a roll has no length");
-        assert!(verify_ticket("<not xml", Some(letter), false).is_err());
+        assert_eq!(verify_ticket(&ticket, Some(letter), false, true), Ok(letter));
+        assert_eq!(verify_ticket(&ticket, Some((279_400, 215_900)), false, true), Ok(letter), "either way round");
+        assert_eq!(verify_ticket(&ticket, None, false, true), Ok(letter), "shrink-to-fit takes the driver's paper");
+        assert!(verify_ticket(&ticket, Some((210_000, 297_000)), false, true).is_err(), "A4 asked, Letter returned");
+        assert!(verify_ticket(&ticket, Some(letter), true, true).is_err(), "landscape asked, portrait returned");
+        assert!(
+            verify_ticket(&validated(letter, "Portrait", Some("psk:FitApplicationBleedSizeToPageImageableSize")), Some(letter), false, true).is_err()
+        );
+        assert!(verify_ticket(&validated(letter, "Portrait", Some("ns0000:None")), Some(letter), false, true).is_ok(), "the IPP class driver's None");
+        assert!(verify_ticket(&validated(letter, "Portrait", None), Some(letter), false, true).is_ok(), "a driver without scaling");
+        // A driver with no PageScaling feature (Zebra's ZDesigner) answers CustomSquare when asked
+        // for None: not asked, its answer is not checked; a driver that offers the feature is held to it.
+        let custom = validated(letter, "Portrait", Some("psk:CustomSquare"));
+        assert_eq!(verify_ticket(&custom, Some(letter), false, false), Ok(letter), "not offered: not refused");
+        assert!(verify_ticket(&custom, Some(letter), false, true).is_err(), "offered: it would scale");
+        assert!(verify_ticket(&validated((0, 279_400), "Portrait", None), None, false, true).is_err(), "a roll has no length");
+        assert!(verify_ticket("<not xml", Some(letter), false, true).is_err());
     }
 
     #[test]

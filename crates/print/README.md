@@ -22,7 +22,8 @@ opens Windows printer preferences and submits jobs with copies, collation, duple
   into the XPS print API (the `winprint` crate), and copies, collation, duplex, colour, paper,
   orientation and "no scaling" travel in a PrintTicket that the driver validates first; a
   driver that would change the paper, orientation or scaling is refused before anything is
-  sent. Paper is the driver's own option for the sheet's size (to 0.25 mm), preferring the one
+  sent. A driver that offers no PageScaling feature at all (Zebra's ZDesigner label drivers)
+  is not asked for one and not held to its answer: asked for None, it answers CustomSquare. Paper is the driver's own option for the sheet's size (to 0.25 mm), preferring the one
   named like the standard size ("ARCH D" over a custom 24 × 36 in entry). This backend comes
   from storytold/pdfcraft#599 and #1132.
   A job has one ticket, so one paper and orientation. Sheets of the other orientation are

@@ -121,16 +121,27 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
         document.parameter_inits.extend(media_document.parameter_inits);
     }
     let scaling_name = OwnedName::qualified("PageScaling", NS_PSK, Some("psk"));
-    if let Some(no_scaling) = capabilities.options_for_feature(scaling_name.clone()).find(|o| o.name.as_ref().is_some_and(|n| n.local_name == "None"))
-    {
-        document.features.retain(|f| !(f.name.local_name == "PageScaling" && f.name.namespace_ref() == Some(NS_PSK)));
-        document.features.push(PrintFeature { name: scaling_name, properties: Vec::new(), options: vec![no_scaling.clone()], features: Vec::new() });
+    let scaling_offered: Vec<_> = capabilities.options_for_feature(scaling_name.clone()).collect();
+    let is_page_scaling = |f: &PrintFeature| f.name.local_name == "PageScaling" && f.name.namespace_ref() == Some(NS_PSK);
+    if scaling_offered.is_empty() {
+        // A driver without a PageScaling feature (Zebra's ZDesigner label drivers) is not asked
+        // for one: asked for None, it answers CustomSquare, which the check below would refuse,
+        // though it cannot scale by a feature it doesn't have.
+        document.features.retain(|f| !is_page_scaling(f));
+    } else if let Some(no_scaling) = scaling_offered.iter().find(|o| o.name.as_ref().is_some_and(|n| n.local_name == "None")) {
+        document.features.retain(|f| !is_page_scaling(f));
+        document.features.push(PrintFeature {
+            name: scaling_name,
+            properties: Vec::new(),
+            options: vec![(*no_scaling).clone()],
+            features: Vec::new(),
+        });
     }
     let mut builder = PrintTicketBuilder::new(device).map_err(spool_error)?;
     builder.merge(PrintTicket::from(document)).map_err(spool_error)?;
     let validated = builder.build().map_err(spool_error)?;
     let xml = std::str::from_utf8(validated.get_xml()).map_err(spool_error)?;
-    let paper = ticket::verify_ticket(xml, wanted, landscape)?;
+    let paper = ticket::verify_ticket(xml, wanted, landscape, !scaling_offered.is_empty())?;
     Ok((validated, paper))
 }
 
