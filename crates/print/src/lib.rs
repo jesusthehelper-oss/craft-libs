@@ -313,13 +313,17 @@ pub struct PrinterPaper {
     /// Width and height in points as the driver has them: a label's width is across the feed,
     /// so a 2.25 × 1.25 in label and a 1.25 × 2.25 in one are different stock.
     pub size: (f64, f64),
+    /// Whether it is the driver's current default: the stock a label printer is set up for, an
+    /// office printer's tray paper. A Print dialog starts on it.
+    pub default: bool,
 }
 
 /// How many papers a driver may put in the list.
 pub const MAX_PRINTER_PAPERS: usize = 400;
 
 /// The paper sizes a printer's driver offers, in the driver's order: on Windows its
-/// PrintCapabilities page media sizes (roll media and sizes beyond 200 inches left out). Empty
+/// PrintCapabilities page media sizes (roll media and sizes beyond 200 inches left out), the
+/// driver's current default marked. Empty
 /// when the printer or its capabilities can't be read, and on other platforms, where the CUPS
 /// queue's PPD holds them (`*PaperDimension`; the apps read it with their driver options).
 /// Reads the driver, so call it when a printer is chosen, not every frame.

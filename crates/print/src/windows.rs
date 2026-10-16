@@ -46,13 +46,24 @@ fn two_sided(device: &PrinterDevice) -> Option<bool> {
 }
 
 /// [`crate::printer_papers`]: the driver's page media sizes as it has them, keyed by their
-/// Print Schema or vendor name and named by their display name. Roll media (a side of 0) and
-/// sizes beyond PDF's 200-inch page limit are left out, as are repeated keywords.
+/// Print Schema or vendor name and named by their display name, the driver's current default
+/// marked. Roll media (a side of 0) and sizes beyond PDF's 200-inch page limit are left out, as
+/// are repeated keywords.
 pub(crate) fn printer_papers(printer: &str) -> Vec<PrinterPaper> {
     const MAX_SIDE: f64 = 14_400.0;
     let Ok(devices) = PrinterDevice::all() else { return Vec::new() };
     let Some(device) = devices.iter().find(|d| d.name() == printer) else { return Vec::new() };
     let Ok(capabilities) = PrintCapabilities::fetch(device) else { return Vec::new() };
+    // The driver's current default: an empty ticket merged and validated comes back complete,
+    // at the driver's defaults (the stock a label printer is set up for, an office printer's
+    // tray paper). None marked when the driver won't say.
+    let default_key = PrintTicketBuilder::new(device)
+        .ok()
+        .and_then(|mut builder| {
+            builder.merge(PrintTicket::from_xml(winprint::ticket::DEFAULT_PRINT_TICKET_XML)).ok()?;
+            builder.build().ok()
+        })
+        .and_then(|validated| std::str::from_utf8(validated.get_xml()).ok().and_then(ticket::media_keyword));
     let mut out: Vec<PrinterPaper> = Vec::new();
     for media in capabilities.page_media_sizes() {
         if out.len() >= crate::MAX_PRINTER_PAPERS {
@@ -65,7 +76,8 @@ pub(crate) fn printer_papers(printer: &str) -> Vec<PrinterPaper> {
             continue;
         }
         let label = media.display_name().filter(|l| !l.trim().is_empty()).map_or_else(|| key.clone(), |l| l.trim().to_string());
-        out.push(PrinterPaper { key, label, size: (w, h) });
+        let default = default_key.as_deref() == Some(key.as_str());
+        out.push(PrinterPaper { key, label, size: (w, h), default });
     }
     out
 }

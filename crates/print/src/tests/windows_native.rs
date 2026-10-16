@@ -48,6 +48,7 @@ fn printer_papers_come_from_the_drivers_capabilities() {
         assert!(papers.iter().all(|p| !p.key.is_empty() && p.size.0 >= 1.0 && p.size.1 >= 1.0), "no roll media");
         let keys: std::collections::BTreeSet<&str> = papers.iter().map(|p| p.key.as_str()).collect();
         assert_eq!(keys.len(), papers.len(), "no repeated keyword");
+        assert_eq!(papers.iter().filter(|p| p.default).count(), 1, "the driver's default paper is marked, once: {papers:?}");
     }
 }
 

@@ -210,6 +210,15 @@ pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize) -> Result<(
     Ok(())
 }
 
+/// The keyword of a ticket's PageMediaSize option, without its namespace prefix
+/// (`NorthAmericaLetter`, a vendor's `User0000000256`): what [`crate::PrinterPaper::key`] holds.
+pub(crate) fn media_keyword(xml: &str) -> Option<String> {
+    let document = roxmltree::Document::parse(xml).ok()?;
+    let media = document.root_element().children().find(|n| n.has_tag_name((NS_PSF, "Feature")) && named(*n, "PageMediaSize"))?;
+    let option = media.children().find(|n| n.has_tag_name((NS_PSF, "Option")))?;
+    option.attribute("name").and_then(|v| v.rsplit(':').next()).filter(|k| !k.is_empty()).map(str::to_string)
+}
+
 /// The widest unprintable margin of the paper, in micrometres, from PrintCapabilities computed
 /// for the job's ticket (`PageImageableSize`). The largest of the four, so content centred inside
 /// it is clear of every edge whichever way the driver measures. `None` when the driver doesn't say.
@@ -267,6 +276,16 @@ mod tests {
         assert!(ticket_xml(&Job { duplex: Some(Duplex::Off), ..Job::default() }, false).contains("psk:OneSided"));
         assert!(ticket_xml(&Job { duplex: Some(Duplex::LongEdge), ..Job::default() }, false).contains("psk:TwoSidedLongEdge"));
         assert!(!ticket_xml(&Job { printer: Some("Office \"east\" <1>".into()), ..Job::default() }, false).contains("east"));
+    }
+
+    #[test]
+    fn the_media_keyword_is_the_tickets_page_media_size_option() {
+        assert_eq!(media_keyword(&validated((215_900, 279_400), "psk:Portrait", None)).as_deref(), Some("NorthAmericaLetter"));
+        assert_eq!(
+            media_keyword(r#"<psf:PrintTicket version="1" xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework"/>"#),
+            None
+        );
+        assert_eq!(media_keyword("not xml"), None);
     }
 
     /// A validated ticket as a driver returns it.
