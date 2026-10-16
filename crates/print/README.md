@@ -46,6 +46,16 @@ opens Windows printer preferences and submits jobs with copies, collation, duple
 - **Browser/other targets:** discovery is empty and submission reports an unsupported
   platform; callers can offer PDF export instead.
 
+The paper a job comes out on is checked on the DEVMODE winprint prints with (the ticket
+converted on the user's own settings, then settled by the driver), not only on the merged
+ticket, which Windows builds on the printer's Printing Defaults: a label driver's one
+"User defined" stock is whatever each dialog says, and when a user's Printing Preferences
+and the printer's Printing Defaults disagree the merged ticket names the defaults' size
+while the job prints on the preferences'. When the driver settles on the paper asked for,
+the ticket asked for is printed with. A driver with no two-sided feature at all (a label
+printer) is not asked to confirm one-sided printing: it can print nothing else; two-sided
+asked of it is refused.
+
 Windows jobs briefly use a file in a private temporary folder (random name, this user's only),
 named after the job's title because the spooler shows it as the document name; the folder is
 removed once the spooler has the job, on success and failure. Failed and canceled terminal

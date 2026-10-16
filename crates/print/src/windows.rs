@@ -99,8 +99,12 @@ fn select_device(devices: Vec<PrinterDevice>, requested: Option<&str>, default: 
 /// its default paper is used. Returns the ticket and its paper in micrometres. Refused when the
 /// driver changed the paper, the orientation or the scaling: then nothing is sent, rather than a
 /// job at the wrong size.
-fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape: bool) -> Result<(PrintTicket, (u32, u32)), Error> {
+fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape: bool) -> Result<(PrintTicket, (u32, u32), bool), Error> {
     let capabilities = PrintCapabilities::fetch(device).map_err(spool_error)?;
+    // Whether the driver has a two-sided feature at all: a label printer's doesn't, and its
+    // answer to a one-sided request is then not judged (see `ticket::verify_job_options`).
+    let duplex_offered =
+        capabilities.options_for_feature(OwnedName::qualified("JobDuplexAllDocumentsContiguously", NS_PSK, Some("psk"))).next().is_some();
     let medias: Vec<PageMediaSize> = capabilities.page_media_sizes().collect();
     let papers: Vec<Paper<'_>> = medias
         .iter()
@@ -149,12 +153,30 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
             features: Vec::new(),
         });
     }
+    let requested_xml = PrintTicket::from(document).into_xml();
     let mut builder = PrintTicketBuilder::new(device).map_err(spool_error)?;
-    builder.merge(PrintTicket::from(document)).map_err(spool_error)?;
+    builder.merge(PrintTicket::from_xml(requested_xml.clone())).map_err(spool_error)?;
     let validated = builder.build().map_err(spool_error)?;
     let xml = std::str::from_utf8(validated.get_xml()).map_err(spool_error)?;
+    // The paper the job comes out on is the one in the DEVMODE winprint prints with: the ticket
+    // converted on the user's own settings and settled by the driver. The merged ticket is built
+    // on the printer's defaults instead, and a driver whose one "User defined" stock is set in
+    // the user's Printing Preferences but not in the printer's Printing Defaults (Zebra's) names
+    // the defaults' size there while printing on the preferences'. So when the driver settles on
+    // the paper asked for, the ticket asked for is the one printed with, and the merged ticket is
+    // only held to the rest; otherwise the merged ticket is held to the paper as well.
+    let requested = PrintTicket::from_xml(requested_xml);
+    let settled = requested.to_dev_mode(device).ok().and_then(|dev_mode| ticket::devmode_paper(&dev_mode));
+    let same = |a: (u32, u32), b: (u32, u32)| a.0.abs_diff(b.0) <= ticket::PAPER_TOLERANCE && a.1.abs_diff(b.1) <= ticket::PAPER_TOLERANCE;
+    if let (Some((size, settled_landscape)), Some(want)) = (settled, wanted)
+        && (same(size, want) || same(size, (want.1, want.0)))
+        && settled_landscape == landscape
+    {
+        ticket::verify_ticket(xml, None, landscape, !scaling_offered.is_empty())?;
+        return Ok((requested, size, duplex_offered));
+    }
     let paper = ticket::verify_ticket(xml, wanted, landscape, !scaling_offered.is_empty())?;
-    Ok((validated, paper))
+    Ok((validated, paper, duplex_offered))
 }
 
 /// The widest unprintable margin of the ticket's paper, in points; 0 when the driver doesn't say.
@@ -190,9 +212,9 @@ pub(crate) fn submit_with_progress(pdf: &[u8], job: &Job, progress: &mut dyn FnM
     let read = &read;
     // The worker is joined before `dir` is dropped: the spooler reads the file.
     let result = crate::progress::run(progress, move |sender| {
-        let (ticket, paper) = driver_ticket(&device, job, first, landscape)?;
+        let (ticket, paper, duplex_offered) = driver_ticket(&device, job, first, landscape)?;
         let xml = std::str::from_utf8(ticket.get_xml()).map_err(spool_error)?;
-        ticket::verify_job_options(xml, job, count)?;
+        ticket::verify_job_options(xml, job, count, duplex_offered)?;
         let (fit, paper) = match job.scaling {
             Scaling::Exact => (Fit::Exact, first),
             Scaling::ShrinkToFit => {
@@ -246,8 +268,8 @@ mod tests {
         let name = std::env::var("CRAFT_PRINT_TEST_PRINTER").unwrap();
         let device = select_device(PrinterDevice::all().unwrap(), Some(&name), None).unwrap();
         let job = Job { copies: 2, ..Job::default() };
-        let (ticket, paper) = driver_ticket(&device, &job, (612.0, 792.0), false).unwrap();
-        ticket::verify_job_options(std::str::from_utf8(ticket.get_xml()).unwrap(), &job, 1).unwrap();
+        let (ticket, paper, duplex_offered) = driver_ticket(&device, &job, (612.0, 792.0), false).unwrap();
+        ticket::verify_job_options(std::str::from_utf8(ticket.get_xml()).unwrap(), &job, 1, duplex_offered).unwrap();
         assert_eq!(paper, (215_900, 279_400));
         eprintln!("unprintable margin: {} pt", imageable_margin(&device, &ticket));
         if let Ok(path) = std::env::var("CRAFT_PRINT_TEST_TICKET_OUTPUT") {
@@ -259,8 +281,8 @@ mod tests {
             ("JobDuplexAllDocumentsContiguously", "TwoSidedLongEdge", Job { duplex: Some(crate::Duplex::LongEdge), ..Job::default() }),
             ("DocumentCollate", "Collated", Job { copies: 2, ..Job::default() }),
         ] {
-            let (ticket, _) = driver_ticket(&device, &requested, (612.0, 792.0), false).unwrap();
-            let retained = ticket::verify_job_options(std::str::from_utf8(ticket.get_xml()).unwrap(), &requested, 3);
+            let (ticket, _, duplex_offered) = driver_ticket(&device, &requested, (612.0, 792.0), false).unwrap();
+            let retained = ticket::verify_job_options(std::str::from_utf8(ticket.get_xml()).unwrap(), &requested, 3, duplex_offered);
             eprintln!("{feature}={wanted}: {retained:?}");
             let offered = capabilities
                 .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
