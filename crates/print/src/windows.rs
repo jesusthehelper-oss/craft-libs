@@ -128,7 +128,12 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
             )));
         }
     };
-    let requested = PrintTicket::from_xml(ticket::ticket_xml(job, landscape));
+    // Which way the sheet lies on the paper: turned when its shape differs from the paper's as the
+    // driver feeds it. Office papers are upright, so a sheet wider than tall is turned; a label
+    // stock defined across the feed (a Zebra's 2.75 × 1.25 in) is wider than tall itself, so a
+    // sheet of that shape lies on it as it is and must not be turned, and an upright sheet must.
+    let turned = ticket::turned(landscape, wanted);
+    let requested = PrintTicket::from_xml(ticket::ticket_xml(job, turned));
     let mut document = PrintTicketDocument::parse_from_bytes(requested.get_xml()).map_err(spool_error)?;
     if let Some(media) = media {
         let media_ticket: PrintTicket = media.clone().into();
@@ -170,12 +175,12 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
     let same = |a: (u32, u32), b: (u32, u32)| a.0.abs_diff(b.0) <= ticket::PAPER_TOLERANCE && a.1.abs_diff(b.1) <= ticket::PAPER_TOLERANCE;
     if let (Some((size, settled_landscape)), Some(want)) = (settled, wanted)
         && (same(size, want) || same(size, (want.1, want.0)))
-        && settled_landscape == landscape
+        && settled_landscape == turned
     {
-        ticket::verify_ticket(xml, None, landscape, !scaling_offered.is_empty())?;
+        ticket::verify_ticket(xml, None, turned, !scaling_offered.is_empty())?;
         return Ok((requested, size, duplex_offered));
     }
-    let paper = ticket::verify_ticket(xml, wanted, landscape, !scaling_offered.is_empty())?;
+    let paper = ticket::verify_ticket(xml, wanted, turned, !scaling_offered.is_empty())?;
     Ok((validated, paper, duplex_offered))
 }
 

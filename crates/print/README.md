@@ -54,7 +54,9 @@ and the printer's Printing Defaults disagree the merged ticket names the default
 while the job prints on the preferences'. When the driver settles on the paper asked for,
 the ticket asked for is printed with. A driver with no two-sided feature at all (a label
 printer) is not asked to confirm one-sided printing: it can print nothing else; two-sided
-asked of it is refused.
+asked of it is refused. A sheet is turned (landscape) only when its shape differs from the
+paper's as the driver feeds it: a wide sheet on upright office paper is, a wide sheet on a
+label stock that is itself wider than tall is not.
 
 Windows jobs briefly use a file in a private temporary folder (random name, this user's only),
 named after the job's title because the spooler shows it as the document name; the folder is

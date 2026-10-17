@@ -214,6 +214,18 @@ pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize, duplex_offe
     Ok(())
 }
 
+/// Whether a sheet is turned on the paper: `sheet_landscape` says the sheet is wider than tall,
+/// `paper` is the driver's paper in micrometres as the driver feeds it. An upright paper (office
+/// sizes) turns a wide sheet; a paper that is itself wider than tall (a label stock defined across
+/// the feed) takes a wide sheet as it is and turns an upright one. Without a known paper the
+/// sheet's own shape decides, as for upright paper.
+pub(crate) fn turned(sheet_landscape: bool, paper: Option<(u32, u32)>) -> bool {
+    match paper {
+        Some((w, h)) if w > h => !sheet_landscape,
+        _ => sheet_landscape,
+    }
+}
+
 /// The paper a DEVMODE prints on, in micrometres, and whether it is landscape: what the driver
 /// settled on when the ticket was converted for printing (winprint's `PrintTicket::to_dev_mode`:
 /// the user's own settings as the base, then the driver's validation). `None` when the DEVMODE
@@ -389,6 +401,18 @@ mod tests {
         // it can only print one side, so nothing is lost and nothing is refused.
         assert!(verify_job_options(&xml, &simplex, 3, false).is_ok(), "one-sided on a printer without two-sided");
         assert!(verify_job_options("<not xml", &default, 1, true).is_err());
+    }
+
+    #[test]
+    fn a_sheet_is_turned_only_when_its_shape_differs_from_the_papers() {
+        let letter = Some((215_900, 279_400));
+        let label = Some((69_850, 31_750)); // 2.75 × 1.25 in, wider than tall as the printer feeds it
+        assert!(turned(true, letter), "a wide sheet on upright paper is turned");
+        assert!(!turned(false, letter));
+        assert!(!turned(true, label), "a wide sheet on a wide label stock lies as it is");
+        assert!(turned(false, label), "an upright sheet on a wide label stock is turned");
+        assert!(turned(true, None) && !turned(false, None), "no paper known: the sheet's shape, as on upright paper");
+        assert!(!turned(false, Some((100_000, 100_000))) && turned(true, Some((100_000, 100_000))), "a square paper is upright");
     }
 
     #[test]
