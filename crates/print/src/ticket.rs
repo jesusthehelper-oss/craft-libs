@@ -155,6 +155,39 @@ pub(crate) fn matching_paper(papers: &[Paper<'_>], width: f64, height: f64) -> O
     candidates.first().map(|(i, _, _)| *i)
 }
 
+/// How far a driver paper's side may be from a sheet's, in micrometres, for [`nearest_paper`]: 3 mm,
+/// or 2 % of the side when that is more, at most 6 mm. Label drivers round their stock to whole
+/// dots (a 203 dpi printer's 4 × 6 in is 800 × 1200 dots, 100.1 × 150.1 mm), so no paper they list
+/// is the sheet's size to a quarter of a millimetre; office sizes are further apart than this
+/// (A4 and Letter differ by 5.9 and 17.6 mm).
+fn near_tolerance(side: u32) -> u32 {
+    (side / 50).clamp(3_000, 6_000)
+}
+
+/// The driver paper closest to a sheet of `width` × `height` points (either way round) when none is
+/// its size ([`matching_paper`]): each side within [`near_tolerance`], the smallest difference
+/// first, on a tie the driver's own order. Its index in `papers`. The sheet is then shrunk onto
+/// it rather than printed at a size the driver doesn't have.
+pub(crate) fn nearest_paper(papers: &[Paper<'_>], width: f64, height: f64) -> Option<usize> {
+    let (w, h) = (micrometres(width.min(height))?, micrometres(width.max(height))?);
+    papers
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let (pw, ph) = (p.width.min(p.height), p.width.max(p.height));
+            (pw > 0 && ph > 0 && pw.abs_diff(w) <= near_tolerance(w) && ph.abs_diff(h) <= near_tolerance(h))
+                .then_some((i, pw.abs_diff(w) + ph.abs_diff(h)))
+        })
+        .min_by_key(|(i, off)| (*off, *i))
+        .map(|(i, _)| i)
+}
+
+/// Whether two papers in micrometres are the same size to [`PAPER_TOLERANCE`], either way round.
+pub(crate) fn same_size(a: (u32, u32), b: (u32, u32)) -> bool {
+    let same = |a: (u32, u32), b: (u32, u32)| a.0.abs_diff(b.0) <= PAPER_TOLERANCE && a.1.abs_diff(b.1) <= PAPER_TOLERANCE;
+    same(a, b) || same(a, (b.1, b.0))
+}
+
 fn named(node: roxmltree::Node<'_, '_>, local: &str) -> bool {
     node.attribute("name")
         .and_then(|v| v.split_once(':'))
@@ -434,10 +467,10 @@ mod tests {
     #[test]
     fn a_custom_paper_is_read_from_its_parameters() {
         let card = (100_000, 150_000);
-        assert_eq!(verify_ticket(&custom("CustomMediaSize", "MediaSize", card), Some(card), false), Ok(card));
-        assert_eq!(verify_ticket(&custom("PSCustomMediaSize", "PS", card), Some(card), false), Ok(card));
-        assert!(verify_ticket(&custom("PSCustomMediaSize", "PS", (210_000, 297_000)), Some(card), false).is_err(), "the driver changed it");
-        assert!(verify_ticket(&custom("PSCustomMediaSize", "PS", (0, 150_000)), None, false).is_err());
+        assert_eq!(verify_ticket(&custom("CustomMediaSize", "MediaSize", card), Some(card), false, true), Ok(card));
+        assert_eq!(verify_ticket(&custom("PSCustomMediaSize", "PS", card), Some(card), false, true), Ok(card));
+        assert!(verify_ticket(&custom("PSCustomMediaSize", "PS", (210_000, 297_000)), Some(card), false, true).is_err(), "the driver changed it");
+        assert!(verify_ticket(&custom("PSCustomMediaSize", "PS", (0, 150_000)), None, false, true).is_err());
     }
 
     #[test]
@@ -535,6 +568,29 @@ mod tests {
     }
 
     #[test]
+    fn a_label_drivers_rounded_stock_is_the_nearest_paper() {
+        let paper = |width, height| Paper { width, height, name: None, keyword: false };
+        let mm = |v: f64| v * 72.0 / 25.4;
+        // Munbyn ITPP130 (203 dpi): its 4.0"x6.0" is 800 × 1200 dots.
+        let munbyn = [paper(215_900, 279_400), paper(100_100, 150_100)];
+        assert_eq!(matching_paper(&munbyn, 288.0, 432.0), None, "not the same paper");
+        assert_eq!(nearest_paper(&munbyn, 288.0, 432.0), Some(1), "4 × 6 in on the driver's 100.1 × 150.1 mm");
+        assert_eq!(nearest_paper(&munbyn, 432.0, 288.0), Some(1), "either way round");
+        // DYMO LabelWriter 550, 99012 Large Address: 35.7 × 88.5 mm, fed across; a La Poste stamp is 89.0 × 36.1 mm.
+        let dymo = [paper(35_700, 88_500)];
+        assert_eq!(nearest_paper(&dymo, 252.28, 102.33), Some(0));
+        // Office sizes stay apart: A4 is not Letter, and Letter is not A4.
+        assert_eq!(nearest_paper(&[paper(215_900, 279_400)], mm(210.0), mm(297.0)), None);
+        assert_eq!(nearest_paper(&[paper(210_000, 297_000)], 612.0, 792.0), None);
+        // The closest of two near papers; a roll (no length) never.
+        assert_eq!(nearest_paper(&[paper(99_000, 150_000), paper(101_000, 152_000)], 288.0, 432.0), Some(1));
+        assert_eq!(nearest_paper(&[paper(101_600, 0)], 288.0, 432.0), None);
+        assert_eq!(nearest_paper(&munbyn, f64::NAN, 432.0), None);
+        assert!(same_size((101_600, 152_400), (152_500, 101_500)));
+        assert!(!same_size((101_600, 152_400), (100_100, 150_100)));
+    }
+
+    #[test]
     fn the_driver_paper_named_like_the_standard_size_is_preferred() {
         let paper = |width, height, name, keyword| Paper { width, height, name, keyword };
         // A plotter listing 24 × 36 in three times: a custom entry first, "ARCH D", and one a hair off.
@@ -548,6 +604,7 @@ mod tests {
         assert_eq!(matching_paper(&[papers[0].clone(), papers[2].clone()], 1728.0, 2592.0), Some(1), "then a schema keyword");
         assert_eq!(matching_paper(&papers, 1728.0, 2600.0), None, "3 mm off is another paper");
         assert_eq!(matching_paper(&papers, f64::NAN, 2592.0), None);
+        assert_eq!(nearest_paper(&papers, 1728.0, 2600.0), Some(0), "the closest, on a tie the driver's order");
         assert_eq!(paper_names(595.0, 842.0), ["A4"], "rounded metric points");
         assert_eq!(paper_names(792.0, 612.0), ["Letter", "US Letter"]);
         assert!(paper_names(360.0, 504.0).is_empty());

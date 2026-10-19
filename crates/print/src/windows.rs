@@ -98,7 +98,12 @@ pub(crate) fn printer_papers(printer: &str) -> Vec<PrinterPaper> {
         let size = media.size();
         let (w, h) = (ticket::points(size.width_in_micron()), ticket::points(size.height_in_micron()));
         // A custom paper option carries a placeholder size, not a stock the driver feeds.
-        if is_custom_paper(&media) || size.is_roll() || !(1.0..=MAX_SIDE).contains(&w) || !(1.0..=MAX_SIDE).contains(&h) || out.iter().any(|p| p.key == key) {
+        if is_custom_paper(&media)
+            || size.is_roll()
+            || !(1.0..=MAX_SIDE).contains(&w)
+            || !(1.0..=MAX_SIDE).contains(&h)
+            || out.iter().any(|p| p.key == key)
+        {
             continue;
         }
         let label = media.display_name().filter(|l| !l.trim().is_empty()).map_or_else(|| key.clone(), |l| l.trim().to_string());
@@ -194,7 +199,10 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
             keyword: m.option().name.as_ref().is_some_and(|n| n.namespace_ref() == Some(NS_PSK)),
         })
         .collect();
-    let listed = ticket::matching_paper(&papers, sheet.0, sheet.1).and_then(|i| medias.get(i));
+    // The driver's paper of the sheet's size, else the nearest it has (a label driver's stock is
+    // rounded to whole dots), onto which `submit_with_progress` then shrinks the sheet.
+    let listed =
+        ticket::matching_paper(&papers, sheet.0, sheet.1).or_else(|| ticket::nearest_paper(&papers, sheet.0, sheet.1)).and_then(|i| medias.get(i));
     let (media, wanted) = match (listed, job.scaling) {
         (Some(m), _) => (Some(m.clone()), Some((m.size().width_in_micron(), m.size().height_in_micron()))),
         (None, Scaling::ShrinkToFit) => (None, None),
@@ -345,9 +353,12 @@ pub(crate) fn submit_with_progress(pdf: &[u8], job: &Job, progress: &mut dyn FnM
         let (ticket, paper, duplex_offered) = driver_ticket(&device, job, first, landscape)?;
         let xml = std::str::from_utf8(ticket.get_xml()).map_err(spool_error)?;
         ticket::verify_job_options(xml, job, count, duplex_offered)?;
+        let sheet_size = ticket::micrometres(first.0).zip(ticket::micrometres(first.1));
         let (fit, paper) = match job.scaling {
-            Scaling::Exact => (Fit::Exact, first),
-            Scaling::ShrinkToFit => {
+            Scaling::Exact if sheet_size.is_none_or(|size| ticket::same_size(size, paper)) => (Fit::Exact, first),
+            // Exact size on the driver's nearest paper (`ticket::nearest_paper`, a few millimetres
+            // off): the sheet is shrunk inside the paper's printable area and centred, never cut.
+            Scaling::Exact | Scaling::ShrinkToFit => {
                 let (short, long) = (ticket::points(paper.0.min(paper.1)), ticket::points(paper.0.max(paper.1)));
                 (Fit::Shrink { margin: imageable_margin(&device, &ticket) }, if landscape { (long, short) } else { (short, long) })
             }
@@ -508,7 +519,7 @@ mod tests {
         builder.merge(PrintTicket::from_xml(winprint::ticket::DEFAULT_PRINT_TICKET_XML.as_bytes().to_vec())).unwrap();
         let preferences = colour(&builder.build().unwrap());
         eprintln!("the preferences' colour: {preferences:?}");
-        let (ticket, _) = driver_ticket(&device, &Job::default(), (595.28, 841.89), false).unwrap();
+        let (ticket, _, _) = driver_ticket(&device, &Job::default(), (595.28, 841.89), false).unwrap();
         assert_eq!(colour(&ticket), preferences, "a job without grayscale keeps the preferences' colour");
     }
 }
