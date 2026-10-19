@@ -233,6 +233,21 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
     let mut builder = PrintTicketBuilder::new(device).map_err(spool_error)?;
     builder.merge(PrintTicket::from_xml(requested_xml.clone())).map_err(spool_error)?;
     let validated = builder.build().map_err(spool_error)?;
+    // The driver's own prefixes for its keywords: some drivers fail the job on Windows'
+    // generated ones (`ns0000:`). Without the driver's default ticket, the validated one as it is.
+    let reference = PrintTicketBuilder::new(device)
+        .and_then(|mut defaults| {
+            defaults.merge(PrintTicket::default())?;
+            defaults.build()
+        })
+        .ok();
+    let validated = match reference.as_ref().map(|r| std::str::from_utf8(r.get_xml())) {
+        Some(Ok(reference)) => match std::str::from_utf8(validated.get_xml()) {
+            Ok(xml) => PrintTicket::from_xml(ticket::driver_prefixes(xml, reference)),
+            Err(_) => validated,
+        },
+        _ => validated,
+    };
     let xml = std::str::from_utf8(validated.get_xml()).map_err(spool_error)?;
     // The paper the job comes out on is the one in the DEVMODE winprint prints with: the ticket
     // converted on the user's own settings and settled by the driver. The merged ticket is built
